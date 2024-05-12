@@ -21,7 +21,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::BIG_STRIDE;
 use crate::loader::get_app_data_by_name;
+use crate::mm::{MapPermission, VirtAddr};
+use crate::syscall;
+use crate::timer::get_time_ms;
 use alloc::sync::Arc;
 use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
@@ -43,6 +47,9 @@ pub fn suspend_current_and_run_next() {
     // ---- access current TCB exclusively
     let mut task_inner = task.inner_exclusive_access();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
+    // update stride
+    let pass = BIG_STRIDE/task_inner.priority as usize;
+    task_inner.stride += pass;
     // Change status to Ready
     task_inner.task_status = TaskStatus::Ready;
     drop(task_inner);
@@ -114,4 +121,52 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+
+/// get the task info
+pub fn get_current_task_info(it: &mut syscall::TaskInfo) -> isize {
+    let current = current_task().unwrap();
+    let inner = current.inner_exclusive_access();
+    it.status = inner.task_status;
+    if it.status != TaskStatus::Running {
+        return -1;
+    }
+    it.syscall_times = inner.syscall_times.clone();
+    it.time = get_time_ms() - inner.time;
+    0
+}
+
+/// increase the syscall times
+pub fn increase_syscall_times(syscall_id: usize) {
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    inner.syscall_times[syscall_id] += 1;
+}
+
+/// Check mem overlap, if overlap return true
+pub fn check_mem_overlap(begin: VirtAddr, end: VirtAddr) -> bool {
+    let current = current_task().unwrap();
+    let inner = current.inner_exclusive_access();
+    inner.memory_set.check_overlap(begin, end)
+}
+
+/// Insert virtual memory mapping into current task's page table
+pub fn insert_vmap(begin: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    inner.memory_set.insert_framed_area(begin, end, permission);
+}
+
+/// Delete virtual memory mapping from current task's page table
+pub fn delete_vmap(begin: VirtAddr, end: VirtAddr) -> bool {
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    inner.memory_set.delete_framed_area(begin, end)
+}
+
+/// update current task priority
+pub fn update_current_task_priority(priority: usize) {
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    inner.priority = priority;
 }

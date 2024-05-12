@@ -48,6 +48,22 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
+    /// check overlap,if overlap return true
+    pub fn check_overlap(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let start_vpn: VirtPageNum = start.floor();
+        let end_vpn: VirtPageNum = end.ceil();
+        for area in self.areas.iter() {
+            let left = area.vpn_range.get_start();
+            let right = area.vpn_range.get_end();
+            if start_vpn < right && start_vpn >= left {
+                return true;
+            }
+            if end_vpn <= right && end_vpn > left {
+                return true;
+            }
+        }
+        false
+    }
     /// Assume that no conflicts.
     pub fn insert_framed_area(
         &mut self,
@@ -71,6 +87,25 @@ impl MemorySet {
             area.unmap(&mut self.page_table);
             self.areas.remove(idx);
         }
+    }
+    /// Assume that no conflicts.
+    pub fn delete_framed_area(&mut self,start: VirtAddr, end: VirtAddr) -> bool{
+        let start_vpn: VirtPageNum = start.floor();
+        let end_vpn: VirtPageNum = end.ceil();
+        for i in 0..self.areas.len() {
+            let area = &self.areas[i]; 
+            let left = area.vpn_range.get_start();
+            let right = area.vpn_range.get_end();
+            if start_vpn >= left && end_vpn <= right {
+                if self.areas[i].start_addr != start || self.areas[i].end_addr != end {
+                    continue;
+                }
+                self.areas[i].unmap(&mut self.page_table);
+                self.areas.remove(i);
+                return true;
+            }
+        }
+        false
     }
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
@@ -307,6 +342,8 @@ pub struct MapArea {
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
     map_type: MapType,
     map_perm: MapPermission,
+    start_addr: VirtAddr,
+    end_addr: VirtAddr,
 }
 
 impl MapArea {
@@ -323,6 +360,8 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type,
             map_perm,
+            start_addr:start_va,
+            end_addr:end_va,
         }
     }
     pub fn from_another(another: &Self) -> Self {
@@ -331,6 +370,8 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type: another.map_type,
             map_perm: another.map_perm,
+            start_addr: another.start_addr,
+            end_addr: another.end_addr,
         }
     }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
