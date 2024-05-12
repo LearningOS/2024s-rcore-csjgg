@@ -18,6 +18,9 @@ use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
+use crate::mm::{MapPermission, VirtAddr};
+use crate::syscall;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -79,6 +82,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.time = get_time_ms();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -140,6 +144,9 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].time == 0{
+                inner.tasks[next].time = get_time_ms(); 
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +159,47 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// get the task info 
+    fn get_current_task_info(&self, it: &mut syscall::TaskInfo)-> isize{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        it.status = inner.tasks[current].task_status;
+        if it.status != TaskStatus::Running{
+            return -1;
+        }
+        it.syscall_times = inner.tasks[current].syscall_times.clone();
+        it.time = get_time_ms()-inner.tasks[current].time;
+        0
+    }
+
+    /// increase the syscall times
+    fn increase_syscall_times(&self, syscall_id: usize){
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id] += 1;
+    }
+
+    /// Check mem overlap, if overlap return true
+    fn check_mem_overlap(&self, begin: VirtAddr, end: VirtAddr) -> bool {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.check_overlap(begin, end)
+    }
+
+    /// Insert virtual memory mapping into current task's page table
+    fn insert_vmap(&self, begin: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.insert_framed_area(begin, end, permission);
+    }
+
+    /// Delete virtual memory mapping from current task's page table
+    fn delete_vmap(&self, begin: VirtAddr, end: VirtAddr)-> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.delete_framed_area(begin, end)
     }
 }
 
@@ -201,4 +249,30 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Get the task info
+pub fn get_current_task_info(it: &mut syscall::TaskInfo)-> isize{
+    TASK_MANAGER.get_current_task_info(it)
+}
+
+/// Increase the syscall times
+pub fn increase_syscall_times(syscall_id: usize){
+    TASK_MANAGER.increase_syscall_times(syscall_id);
+}   
+
+
+/// Check mem overlap, if overlap return true
+pub fn check_mem_overlap(begin: VirtAddr, end: VirtAddr) -> bool {
+    TASK_MANAGER.check_mem_overlap(begin, end)
+}
+
+/// Insert virtual memory mapping into current task's page table
+pub fn insert_vmap(begin: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.insert_vmap(begin, end, permission)
+}
+
+/// Delete virtual memory mapping from current task's page table
+pub fn delete_vmap(begin: VirtAddr, end: VirtAddr) -> bool{
+    TASK_MANAGER.delete_vmap(begin, end)
 }
