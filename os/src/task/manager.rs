@@ -18,7 +18,7 @@ pub struct TaskManager {
 
 /// A simple FIFO scheduler.
 impl TaskManager {
-    ///Creat an empty TaskManager
+    ///Creat an empty TaskManagerx
     pub fn new() -> Self {
         Self {
             ready_queue: VecDeque::new(),
@@ -31,7 +31,18 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        if let Some((_index, min_value)) = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, val)| val.get_stride())
+        {
+            let min = min_value.clone();
+            self.ready_queue.remove(_index);
+            Some(min)
+        } else {
+            None
+        }
     }
     pub fn remove(&mut self, task: Arc<TaskControlBlock>) {
         if let Some((id, _)) = self

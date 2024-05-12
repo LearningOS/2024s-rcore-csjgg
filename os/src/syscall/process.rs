@@ -1,13 +1,21 @@
+//! Process management syscalls
+
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
-    task::{
-        current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
-        suspend_current_and_run_next, SignalFlags, TaskStatus,
+    mm::{
+        translated_byte_buffer, translated_ref, translated_refmut, translated_str, MapPermission,
+        VirtAddr,
     },
+    task::{
+        check_mem_overlap, current_process, current_task, current_user_token, delete_vmap,
+        exit_current_and_run_next, get_current_task_info, insert_vmap, pid2process,
+        suspend_current_and_run_next, update_current_task_priority, SignalFlags, TaskStatus,
+    },
+    timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
+use core::mem::size_of;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -20,11 +28,11 @@ pub struct TimeVal {
 #[allow(dead_code)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
-    status: TaskStatus,
+    pub status: TaskStatus,
     /// The numbers of syscall called by task
-    syscall_times: [u32; MAX_SYSCALL_NUM],
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
-    time: usize,
+    pub time: usize,
 }
 /// exit syscall
 ///
@@ -100,6 +108,32 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
     }
 }
 
+/// fork + exec =/= spawn
+pub fn sys_spawn(_path: *const u8) -> isize {
+    trace!(
+        "kernel:pid[{}] sys_spawn",
+        current_task().unwrap().process.upgrade().unwrap().getpid()
+    );
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
+        let process = current_process();
+        let new_process = process.spawn(&all_data);
+        let new_pid = new_process.getpid();
+        // modify trap context of new_task, because it returns immediately after switching
+        let new_process_inner = new_process.inner_exclusive_access();
+        let task = new_process_inner.tasks[0].as_ref().unwrap();
+        let trap_cx = task.inner_exclusive_access().get_trap_cx();
+        // we do not have to move to next instruction since we have done it before
+        // for child process, fork returns 0
+        trap_cx.x[10] = 0;
+        new_pid as isize
+    } else {
+        -1
+    }
+}
+
 /// waitpid syscall
 ///
 /// If there is not a child process whose pid is same as given, return -1.
@@ -157,51 +191,78 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
     }
 }
 
-/// get_time syscall
-///
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+/// get time with second and microsecond
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    trace!("kernel: sys_get_time");
+    let target_ =
+        translated_byte_buffer(current_user_token(), ts as *const u8, size_of::<TimeVal>());
+
+    // get time
+    let us = get_time_us();
+    let tv = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let mut begin = (&tv) as *const _ as *const u8;
+
+    // copy into target
+    for target in target_ {
+        target.copy_from_slice(unsafe { core::slice::from_raw_parts(begin, target.len()) });
+        begin = unsafe { begin.add(target.len()) };
+    }
+    0
 }
 
-/// task_info syscall
-///
-/// YOUR JOB: Finish sys_task_info to pass testcases
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TaskInfo`] is splitted by two pages ?
+/// Finish sys_task_info to pass testcases
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
+    trace!("kernel: sys_task_info");
+    let mut ti = TaskInfo {
+        status: TaskStatus::Running,
+        syscall_times: [0; MAX_SYSCALL_NUM],
+        time: 0,
+    };
+    if get_current_task_info(&mut ti) == -1 {
+        return -1;
+    }
+    let target_ = translated_byte_buffer(
+        current_user_token(),
+        _ti as *const u8,
+        size_of::<TaskInfo>(),
     );
-    -1
+    let mut begin = (&ti) as *const _ as *const u8;
+    for target in target_ {
+        target.copy_from_slice(unsafe { core::slice::from_raw_parts(begin, target.len()) });
+        begin = unsafe { begin.add(target.len()) };
+    }
+    0
 }
 
-/// mmap syscall
-///
-/// YOUR JOB: Implement mmap.
+/// mmap: alloc a memory area and map it to the task's virtual memory space
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+    trace!("kernel: sys_mmap");
+    let start_va = VirtAddr::from(_start);
+    if !start_va.aligned() || _port & !0x7 != 0 || _port & 0x7 == 0 {
+        return -1;
+    }
+    let end_va = VirtAddr::from(_start + _len);
+    // check existing
+    if check_mem_overlap(start_va, end_va) {
+        return -1;
+    }
+    let mut permission = MapPermission::from_bits((_port as u8) << 1).unwrap();
+    permission.set(MapPermission::U, true);
+    insert_vmap(start_va, end_va, permission);
+    0
 }
 
-/// munmap syscall
-///
-/// YOUR JOB: Implement munmap.
+/// munmap: unmap the memory area
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
+    trace!("kernel: sys_munmap");
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+    if delete_vmap(start_va, end_va) {
+        return 0;
+    }
     -1
 }
 
@@ -214,24 +275,15 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
 //     -1
 // }
 
-/// spawn syscall
-/// YOUR JOB: Implement spawn.
-/// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
-}
-
-/// set priority syscall
-///
-/// YOUR JOB: Set task priority
+// Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if _prio < 2 {
+        return -1;
+    }
+    update_current_task_priority(_prio as usize);
+    _prio
 }

@@ -176,4 +176,8 @@ impl File for Pipe {
             }
         }
     }
+    fn stat(&self, st: &mut super::Stat) -> isize {
+        st.mode = super::StatMode::FILE;
+        0
+    }
 }

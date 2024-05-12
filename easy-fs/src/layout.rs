@@ -100,8 +100,8 @@ pub struct DiskInode {
     pub indirect1: u32,
     /// two-level indirect block id
     pub indirect2: u32,
-    /// inode type
     type_: DiskInodeType,
+    nlink: usize,
 }
 
 impl DiskInode {
@@ -112,6 +112,7 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.nlink = 1;
     }
     /// inode is directory?
     pub fn is_dir(&self) -> bool {
@@ -401,6 +402,14 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+    /// get nlink
+    pub fn get_nlink(&self)->usize{
+        self.nlink
+    }
+    /// increase nlink
+    pub fn modify_nlink(&mut self,newnlink:usize){
+        self.nlink = newnlink;
     }
 }
 

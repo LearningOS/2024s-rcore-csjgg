@@ -4,6 +4,7 @@ use super::id::TaskUserRes;
 use super::{kstack_alloc, KernelStack, ProcessControlBlock, TaskContext};
 use crate::trap::TrapContext;
 use crate::{mm::PhysPageNum, sync::UPSafeCell};
+use crate::config::MAX_SYSCALL_NUM;
 use alloc::sync::{Arc, Weak};
 use core::cell::RefMut;
 
@@ -28,6 +29,11 @@ impl TaskControlBlock {
         let inner = process.inner_exclusive_access();
         inner.memory_set.token()
     }
+    /// Get stride
+    pub fn get_stride(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.stride
+    }
 }
 
 pub struct TaskControlBlockInner {
@@ -41,6 +47,17 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Total running time of task
+    pub time: usize,
+
+    /// Priority
+    pub priority: usize,
+
+    /// stride
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -75,6 +92,10 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    time: 0,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         }
