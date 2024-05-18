@@ -6,6 +6,8 @@ use crate::trap::TrapContext;
 use crate::{mm::PhysPageNum, sync::UPSafeCell};
 use crate::config::MAX_SYSCALL_NUM;
 use alloc::sync::{Arc, Weak};
+use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::RefMut;
 
 /// Task control block structure
@@ -58,6 +60,16 @@ pub struct TaskControlBlockInner {
 
     /// stride
     pub stride: usize,
+
+    /// mutex_alloc
+    pub mutex_alloc: Vec<i32>,
+    /// mutex_need
+    pub mutex_need: Vec<i32>,
+
+    /// semaphore_alloc
+    pub semaphore_alloc: Vec<i32>,
+    /// semaphore_need
+    pub semaphore_need: Vec<i32>,
 }
 
 impl TaskControlBlockInner {
@@ -82,6 +94,8 @@ impl TaskControlBlock {
         let trap_cx_ppn = res.trap_cx_ppn();
         let kstack = kstack_alloc();
         let kstack_top = kstack.get_top();
+        let mutex_len = process.inner_exclusive_access().mutex_list.len() as usize;
+        let semaphore_len = process.inner_exclusive_access().semaphore_list.len() as usize;
         Self {
             process: Arc::downgrade(&process),
             kstack,
@@ -96,6 +110,10 @@ impl TaskControlBlock {
                     time: 0,
                     priority: 16,
                     stride: 0,
+                    mutex_alloc: vec![0;mutex_len],
+                    mutex_need: vec![0;mutex_len],
+                    semaphore_alloc: vec![0;semaphore_len],
+                    semaphore_need: vec![0;semaphore_len],
                 })
             },
         }

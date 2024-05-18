@@ -45,10 +45,16 @@ pub struct ProcessControlBlockInner {
     pub task_res_allocator: RecycleAllocator,
     /// mutex list
     pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
+    /// mutex res
+    pub mutex_res:Vec<i32>,
     /// semaphore list
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
+    /// semaphore res
+    pub semaphore_res:Vec<i32>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// open detct
+    pub open_detect: bool,
 }
 
 impl ProcessControlBlockInner {
@@ -117,8 +123,11 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
+                    mutex_res: Vec::new(),
                     semaphore_list: Vec::new(),
+                    semaphore_res: Vec::new(),
                     condvar_list: Vec::new(),
+                    open_detect: false,
                 })
             },
         });
@@ -243,8 +252,11 @@ impl ProcessControlBlock {
                     tasks: Vec::new(),
                     task_res_allocator: RecycleAllocator::new(),
                     mutex_list: Vec::new(),
+                    mutex_res: Vec::new(),
                     semaphore_list: Vec::new(),
+                    semaphore_res: Vec::new(),
                     condvar_list: Vec::new(),
+                    open_detect: false,
                 })
             },
         });
